@@ -80,7 +80,7 @@ class ZedBlobDetector:
         orange_a_max: float = 165,   # Turuncu a* üst sınırı
         orange_b_min: float = 152,   # Turuncu b* alt sınırı
         orange_b_max: float = 170,   # Turuncu b* üst sınırı
-        # ── Sarı: L*, a*, b* Alt ve Üst Sınırları (Hassas Kalibrasyon) ──        
+        # ── Sarı: L*, a*, b* Alt ve Üst Sınırları (Hassas Kalibrasyon) ──
         yellow_l_min: float = 201,   # Sarı parlaklık alt sınırı
         yellow_l_max: float = 255,   # Sarı parlaklık üst sınırı
         yellow_a_min: float = 107,   # Sarı a* alt sınırı

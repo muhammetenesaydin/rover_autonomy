@@ -27,12 +27,17 @@ GPS_WAYPOINTS = [
     (38.5198475, 39.4173427),
     (38.5198877, 39.4174570),  # Ondalık ayırıcı NOKTA olmalı (virgül değil!)
 ]"""
+"""
 GPS_WAYPOINTS = [
     (38.6734844, 39.1867569), 
     (38.6735058, 39.1868011),
     (38.6735370, 39.1868608),  # Ondalık ayırıcı NOKTA olmalı (virgül değil!)
+]"""
+GPS_WAYPOINTS = [ #meydanda çaprazlı
+    (38.6734192, 39.1867130), 
+    (38.6734705, 39.1867498),
+    (38.6734679, 39.1868256),  # Ondalık ayırıcı NOKTA olmalı (virgül değil!)
 ]
-
 
 # =============================================================
 # ROVER / NAVİGASYON
@@ -50,8 +55,8 @@ ZED_FPS        = 30                    # Kamera FPS
 ZED_DEPTH_MODE = sl.DEPTH_MODE.NEURAL_PLUS   # SDK 4.x: ULTRA deprecated, NEURAL_PLUS önerilir
 ZED_MIN_DIST   = 0.2                   # Minimum derinlik ölçüm mesafesi (metre) — ZED en az 0.2m kısıtı var
 MAP_MIN_DIST   = ZED_MIN_DIST          # Duba tespiti mesafe alt filtresi (detect_colored_buoys)
-CAMERA_HEIGHT  = 0.25                  # Kameranın su seviyesinden yüksekliği (metre)
-MIN_OBSTACLE_HEIGHT = 0.1              # Engel kabul edilmesi için su seviyesinden min. yükseklik (metre)
+CAMERA_HEIGHT  = 0.30                  # Kameranın su seviyesinden yüksekliği (metre)
+MIN_OBSTACLE_HEIGHT = 0.05              # Engel kabul edilmesi için su seviyesinden min. yükseklik (metre)
 
 # =============================================================
 # ENGEL ALGILAMA

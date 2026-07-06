@@ -407,6 +407,7 @@ def arm_vehicle(master, arm: bool):
 def send_global_setpoint(master, lat: float, lon: float):
     """GUIDED modda GPS pozisyon hedefi gönder."""
     mask = (
+        mavutil.mavlink.POSITION_TARGET_TYPEMASK_Z_IGNORE |
         mavutil.mavlink.POSITION_TARGET_TYPEMASK_VX_IGNORE |
         mavutil.mavlink.POSITION_TARGET_TYPEMASK_VY_IGNORE |
         mavutil.mavlink.POSITION_TARGET_TYPEMASK_VZ_IGNORE |
@@ -489,6 +490,7 @@ def send_guided_speed(master, speed_ms: float):
 
     speed_ms: 0=dur, -1=varsayılana dön (conf.py WP_SPEED)
     """
+    print(f"\n  [HIZ] Hedef hız limiti güncelleniyor: {speed_ms:.2f} m/s")
     master.mav.command_long_send(
         master.target_system,
         master.target_component,
@@ -725,6 +727,12 @@ try:
     mc_state    = MissionState.IDLE
     buoy_detections = {'orange': [], 'yellow': [], 'black': [], 'red': [], 'green': []}
 
+    gps_fix         = 0
+    satellites      = 0
+    servo1          = 1500
+    servo3          = 1500
+    is_armed        = False
+
     print("\n[HAZIR] Pixhawk'tan GUIDED modu bekleniyor...")
 
     current_mode = None
@@ -802,7 +810,10 @@ try:
             last_sp_send       = 0.0   # Tek unified setpoint timer — tüm katmanlar kullanır
             turn_dir           = 'none'
             brake_active       = False  # Proaktif fren durumu takibi
-            SP_INTERVAL        = 0.10   # 10 Hz setpoint gönderme frekansı
+            last_sent_speed    = 1.5    # Son gönderilen hız limiti (varsayılan 1.5 m/s)
+            last_global_wp_send = 0.0   # Açık alanda setpoint spamini önlemek için timer
+            SP_INTERVAL        = 0.50   # 2 Hz setpoint gönderme frekansı (Pixhawk'ın yavaşlama/hızlanma rampaları için idealdir)
+            aligning_to_wp     = False  # Sadece rotaya hizalanma dönüşü mü yapıyoruz?
 
             while True:
                 now = time.time()
@@ -828,6 +839,15 @@ try:
                             if mode_id == custom_mode:
                                 current_mode = name
                                 break
+                        is_armed = (m.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED) != 0
+                    elif m.get_type() == 'GPS_RAW_INT':
+                        gps_fix     = m.fix_type
+                        satellites  = m.satellites_visible
+                    elif m.get_type() == 'SERVO_OUTPUT_RAW':
+                        servo1      = m.servo1_raw
+                        servo3      = m.servo3_raw
+                    elif m.get_type() == 'COMMAND_ACK':
+                        print(f"\n[ACK] Komut: {m.command} | Sonuç: {m.result} (0=ACCEPTED, 4=FAILED)")
 
                 # ── Mod Koruyucu: GUIDED dışına çıkılırsa anında kontrolü kullanıcıya bırak ──
                 if current_mode is not None and current_mode != "GUIDED":
@@ -839,6 +859,7 @@ try:
                 goal_x, goal_y = compute_goal_body_frame(
                     curr_lat, curr_lon, sp_lat, sp_lon, heading_deg
                 )
+                heading_error = math.degrees(math.atan2(goal_x, goal_y))
 
                 # ── ZED Frame + Engel Analizi ─────────────────────────────
                 rgb, depth = camera.get_frame()
@@ -906,18 +927,22 @@ try:
                     if brake_dist < OBSTACLE_MED_LIMIT:
                         if brake_dist >= 2.5:
                             t          = (brake_dist - 2.5) / (OBSTACLE_MED_LIMIT - 2.5)
-                            target_spd = 0.5 + t * 0.7
+                            target_spd = 0.6 + t * 0.9  # 0.6 ile 1.5 m/s arasında ölçekle
                         else:
-                            target_spd = 0.3
-                        if not brake_active:
+                            target_spd = 0.6            # En düşük güvenli hız (dümen hakimiyeti için)
+                        
+                        # Hız komutunu ilk defa veya hız belirgin şekilde değiştiğinde (en az 0.1 m/s fark) gönder
+                        if not brake_active or abs(target_spd - last_sent_speed) > 0.1:
                             send_guided_speed(master, target_spd)
+                            last_sent_speed = target_spd
                             brake_active = True
                     else:
                         if brake_active:
-                            send_guided_speed(master, 5.0)
+                            send_guided_speed(master, 1.5)  # Pixhawk'ın kabul edeceği makul cruise hızı (5.0 çok yüksek)
+                            last_sent_speed = 1.5
                             brake_active = False
 
-                    # ── SETPOINT GÖNDER (10 Hz unified timer) ────────────────
+                    # ── SETPOINT GÖNDER (2 Hz unified timer) ─────────────────
                     if now - last_sp_send >= SP_INTERVAL:
                         orange_too_close = [b for b in orange_nearby if b[2] < ORANGE_ESCAPE_DIST]
 
@@ -946,8 +971,15 @@ try:
                         elif (obs_dist_near < OBSTACLE_NEAR_LIMIT or
                               (info and info.get('emergency', False))):
                             is_emg   = info.get('emergency', False) if info else False
-                            turn_dir = 'left' if obs_dir_near in ('right', 'center') or is_emg else 'right'
+                            # Engel merkezdeyse veya acil durumsa waypoint yönüne dön (heading_error'u azaltacak şekilde)
+                            if obs_dir_near == 'center' or is_emg:
+                                turn_dir = 'right' if heading_error > 0 else 'left'
+                            else:
+                                # Engel sol veya sağda ise zıt yöne dön
+                                turn_dir = 'right' if obs_dir_near == 'left' else 'left'
+                            
                             print(f"\n  🚨 [NAVIGATE→STOP] d={obs_dist_near:.1f}m yön:{obs_dir_near} kaçış:{turn_dir}")
+                            aligning_to_wp = False
                             state       = STATE_STOP
                             state_since = now
 
@@ -976,8 +1008,17 @@ try:
                                     side = "→ sağa" if lane_off > 0 else "← sola"
                                     print(f"\n  🟠 [KORIDOR] {side} off={lane_off:+.2f} n={len(orange_nearby)}", end="\r")
 
+                        elif not in_corridor and abs(heading_error) > 45.0 and dist > 2.0 and curr_lat != 0.0:
+                            turn_dir = 'right' if heading_error > 0 else 'left'
+                            print(f"\n  🔄 [ROTADAN SAPMA] Açı Sapması: {heading_error:.1f}° > 45° | Hizalanmak için duruluyor... Yön: {turn_dir}")
+                            aligning_to_wp = True
+                            state       = STATE_STOP
+                            state_since = now
+
                         else:
-                            send_global_setpoint(master, sp_lat, sp_lon)
+                            if now - last_global_wp_send >= 2.0:
+                                send_global_setpoint(master, sp_lat, sp_lon)
+                                last_global_wp_send = now
                             last_sp_send = now
 
                 elif state == STATE_STOP:
@@ -989,13 +1030,32 @@ try:
                         state_since = now
 
                 elif state == STATE_TURN:
-                    # GUIDED'da kal — saf pivot: vx=0, yaw_rate=±GUIDED_AVOID_YAW_RATE
-                    send_guided_velocity(master, 0.0, _yaw_rate_for_direction(turn_dir))
-                    center_clear = (not info) or (info['dist_center'] >= OBSTACLE_NEAR_LIMIT)
-                    time_limit   = (now - state_since) >= 5.0
-                    if center_clear or time_limit:
-                        reason = "Merkez temizlendi" if center_clear else "Maks. dönüş süresi"
-                        print(f"  🛑 [TURN→STABILIZE] {reason} | Kalan: {dist:.1f}m")
+                    # GUIDED'da kal — otopilotun motorları aktif kontrol edebilmesi için hafif ileri hız (0.4 m/s) verilir.
+                    # (0.0 olunca otopilot dönmek yerine düz kayıyor / tepkisiz kalıyor)
+                    turn_speed = 0.4
+                    send_guided_velocity(master, turn_speed, _yaw_rate_for_direction(turn_dir))
+                    
+                    time_limit = (now - state_since) >= 5.0
+                    
+                    if aligning_to_wp:
+                        # Rota hizalanma dönüşü: 5 derece toleransla dur
+                        turn_finished = (abs(heading_error) < 5.0)
+                    else:
+                        # Engelden kaçınma dönüşü: Önümüz temiz olmalı ve hedefe yönlenene kadar dönmeliyiz
+                        center_clear = (not info) or (info['dist_center'] >= OBSTACLE_NEAR_LIMIT)
+                        if center_clear:
+                            # Önümüz temizse, hedefe hizalanmaya devam et (15 derece toleransla)
+                            turn_finished = (abs(heading_error) < 15.0)
+                        else:
+                            # Önümüz kapalıysa dönüşü kesme, dönmeye devam et
+                            turn_finished = False
+                            
+                    if turn_finished or time_limit:
+                        reason = (
+                            "Hizalandı" if aligning_to_wp else 
+                            ("Merkez temiz ve hizalandı" if turn_finished else "Maks. dönüş süresi")
+                        )
+                        print(f"  🛑 [TURN→STABILIZE] {reason} | Açı Sapması: {heading_error:.1f}° | Kalan: {dist:.1f}m")
                         state       = STATE_STABILIZE
                         state_since = now
 
@@ -1005,9 +1065,10 @@ try:
                     if now - state_since >= 0.24:
                         print(f"  ✅ [STABILIZE→COOLDOWN] Rotaya devam ediyorum (GUIDED'dan hiç çıkmadım)")
                         send_global_setpoint(master, sp_lat, sp_lon)
-                        send_guided_speed(master, 5.0)
+                        send_guided_speed(master, 1.5)  # Seyir hızına geri dön (1.5 m/s)
                         last_sp_send = now
                         avoider.start_cooldown()
+                        aligning_to_wp = False  # Hizalanma bitti
                         state       = STATE_COOLDOWN
                         state_since = now
 
@@ -1042,15 +1103,20 @@ try:
                              len(buoy_detections.get('red',   [])) +
                              len(buoy_detections.get('green', [])))
                     or_dist_str = f"{orange_min_dist:.1f}" if orange_min_dist < 99 else "--"
-                    brk_str     = f"🔴 {brake_dist:.1f}" if brake_active else "  "
+                    brk_str     = f"🔴{brake_dist:.1f}" if brake_active else "  "
+                    
+                    fix_names = {0: "No", 1: "No", 2: "2D", 3: "3D", 4: "DGPS", 5: "FloatRTK", 6: "FixedRTK"}
+                    fix_str = fix_names.get(gps_fix, f"B({gps_fix})")
+                    gps_status = f"{fix_str}({satellites}s)"
+                    arm_str = "ARMED" if is_armed else "DISARM"
+                    
                     print(
-                        f"  [{state:9s}|{mc_state.name}] "
+                        f"  [{state:9s}|{arm_str}|GPS:{gps_status}] "
                         f"WP:{dist:.1f}m Hız:{speed:.1f} | "
-                        f"Sol:{info['dist_left']:.1f} "
-                        f"Mrkz:{info['dist_center']:.1f} "
-                        f"Sağ:{info['dist_right']:.1f} | "
-                        f"🟠 {n_or}  {or_dist_str}m  🟡 {n_ye} {brk_str} | "
-                        f"gx={goal_x:.1f} gy={goal_y:.1f}"
+                        f"Sol:{info['dist_left']:.1f} Mrkz:{info['dist_center']:.1f} Sağ:{info['dist_right']:.1f} | "
+                        f"PWM: S{servo1} T{servo3} | "
+                        f"🟠{n_or}({or_dist_str}m) 🟡{n_ye}({brk_str}) | "
+                        f"gx={goal_x:.1f} gy={goal_y:.1f} err={heading_error:+.1f}°"
                         + engel_str,
                         end="\r"
                     )
@@ -1123,5 +1189,4 @@ finally:
             recorder.stop()
         except Exception: pass
     print("Tüm modüller kapatıldı.")
-
 
