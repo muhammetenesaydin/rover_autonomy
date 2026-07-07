@@ -454,7 +454,6 @@ def send_guided_velocity(master, speed_ms: float, yaw_rate_rad: float):
         mavutil.mavlink.POSITION_TARGET_TYPEMASK_X_IGNORE |
         mavutil.mavlink.POSITION_TARGET_TYPEMASK_Y_IGNORE |
         mavutil.mavlink.POSITION_TARGET_TYPEMASK_Z_IGNORE |
-        mavutil.mavlink.POSITION_TARGET_TYPEMASK_VY_IGNORE |
         mavutil.mavlink.POSITION_TARGET_TYPEMASK_VZ_IGNORE |
         mavutil.mavlink.POSITION_TARGET_TYPEMASK_AX_IGNORE |
         mavutil.mavlink.POSITION_TARGET_TYPEMASK_AY_IGNORE |
@@ -476,10 +475,10 @@ def send_guided_velocity(master, speed_ms: float, yaw_rate_rad: float):
 
 def _yaw_rate_for_direction(direction: str) -> float:
     """turn_dir ('left'/'right') → GUIDED yaw_rate (rad/s).
-    ArduPilot NED konvansiyonu: + = sağa (saat yönü), - = sola.
-    (avoidance.py'deki MANUAL_CONTROL r işareti bunun TERSİYDİ — dikkat.)
+    DÜZELTME: Simülasyon/Otopilot yönü ters kilitlendiği için:
+    + = sola dön (CCW), - = sağa dön (CW).
     """
-    return -GUIDED_AVOID_YAW_RATE if direction == 'left' else GUIDED_AVOID_YAW_RATE
+    return GUIDED_AVOID_YAW_RATE if direction == 'left' else -GUIDED_AVOID_YAW_RATE
 
 
 def send_guided_speed(master, speed_ms: float):
@@ -549,7 +548,7 @@ def corridor_corrected_setpoint(sp_lat, sp_lon, orange_buoys, heading_deg):
     return corrected_lat, corrected_lon, lane_offset
 
 
-def corridor_carrot_setpoint(curr_lat, curr_lon, orange_buoys, heading_deg,
+def corridor_carrot_setpoint(curr_lat, curr_lon, sp_lat, sp_lon, orange_buoys, heading_deg,
                               lookahead_m=6.0):
     """
     Turuncu dubalara göre koridor merkezini bulur ve lookahead_m ileri
@@ -586,28 +585,37 @@ def corridor_carrot_setpoint(curr_lat, curr_lon, orange_buoys, heading_deg,
     lateral_m   = float(np.clip(lateral_m, -2.5, 2.5))
     lane_offset = float(np.clip(lateral_m / safe_wall, -1.0, 1.0))
 
-    psi   = math.radians(heading_deg)
+    cos_lat       = math.cos(math.radians(curr_lat))
+    d_north       = (sp_lat - curr_lat) * 111320.0
+    d_east        = (sp_lon - curr_lon) * 111320.0 * cos_lat
+    bearing       = math.atan2(d_east, d_north)
+
+    psi   = bearing
     north = lookahead_m * math.cos(psi) + lateral_m * (-math.sin(psi))
     east  = lookahead_m * math.sin(psi) + lateral_m *   math.cos(psi)
 
-    cos_lat       = math.cos(math.radians(curr_lat))
     corrected_lat = curr_lat + north / 111320.0
     corrected_lon = curr_lon + east  / (111320.0 * cos_lat)
     return corrected_lat, corrected_lon, lane_offset
 
 
-def obstacle_avoidance_carrot_setpoint(curr_lat, curr_lon, obs_direction, heading_deg,
+def obstacle_avoidance_carrot_setpoint(curr_lat, curr_lon, sp_lat, sp_lon, obs_direction, heading_deg,
                                         lookahead_m=6.0):
     """Orta mesafeli engelden kaçmak için carrot setpoint üretir."""
     lateral_m = 2.0 if obs_direction in ('left', 'center') else -2.0
 
-    psi   = math.radians(heading_deg)
+    cos_lat       = math.cos(math.radians(curr_lat))
+    d_north       = (sp_lat - curr_lat) * 111320.0
+    d_east        = (sp_lon - curr_lon) * 111320.0 * cos_lat
+    bearing       = math.atan2(d_east, d_north)
+
+    psi   = bearing
     north = lookahead_m * math.cos(psi) + lateral_m * (-math.sin(psi))
     east  = lookahead_m * math.sin(psi) + lateral_m *   math.cos(psi)
 
-    cos_lat       = math.cos(math.radians(curr_lat))
+    cos_lat_corr  = math.cos(math.radians(curr_lat))
     corrected_lat = curr_lat + north / 111320.0
-    corrected_lon = curr_lon + east  / (111320.0 * cos_lat)
+    corrected_lon = curr_lon + east  / (111320.0 * cos_lat_corr)
     return corrected_lat, corrected_lon
 
 
@@ -960,7 +968,7 @@ try:
                                 escape_dir = 'right' if cx_px < IMAGE_WIDTH / 2.0 else 'left'
                                 if curr_lat != 0.0:
                                     c_lat, c_lon = obstacle_avoidance_carrot_setpoint(
-                                        curr_lat, curr_lon, escape_dir, heading_deg, lookahead_m=3.0)
+                                        curr_lat, curr_lon, sp_lat, sp_lon, escape_dir, heading_deg, lookahead_m=3.0)
                                 else:
                                     c_lat, c_lon = obstacle_avoidance_setpoint(
                                         sp_lat, sp_lon, escape_dir, heading_deg)
@@ -986,7 +994,7 @@ try:
                         elif OBSTACLE_NEAR_LIMIT <= obs_dist_med < OBSTACLE_MED_LIMIT:
                             if curr_lat != 0.0:
                                 c_lat, c_lon = obstacle_avoidance_carrot_setpoint(
-                                    curr_lat, curr_lon, obs_dir_med, heading_deg)
+                                    curr_lat, curr_lon, sp_lat, sp_lon, obs_dir_med, heading_deg)
                             else:
                                 c_lat, c_lon = obstacle_avoidance_setpoint(
                                     sp_lat, sp_lon, obs_dir_med, heading_deg)
@@ -997,7 +1005,7 @@ try:
                         elif in_corridor:
                             if curr_lat != 0.0:
                                 c_lat, c_lon, lane_off = corridor_carrot_setpoint(
-                                    curr_lat, curr_lon, orange_nearby, heading_deg)
+                                    curr_lat, curr_lon, sp_lat, sp_lon, orange_nearby, heading_deg)
                             else:
                                 c_lat, c_lon, lane_off = corridor_corrected_setpoint(
                                     sp_lat, sp_lon, orange_nearby, heading_deg)
@@ -1010,7 +1018,7 @@ try:
 
                         elif not in_corridor and abs(heading_error) > 45.0 and dist > 2.0 and curr_lat != 0.0:
                             turn_dir = 'right' if heading_error > 0 else 'left'
-                            print(f"\n  🔄 [ROTADAN SAPMA] Açı Sapması: {heading_error:.1f}° > 45° | Hizalanmak için duruluyor... Yön: {turn_dir}")
+                            print(f"\n  🔄 [ROTADAN SAPMA (SP)] Açı Sapması: {heading_error:.1f}° > 45° | Hizalanmak için duruluyor... Yön: {turn_dir}")
                             aligning_to_wp = True
                             state       = STATE_STOP
                             state_since = now
@@ -1021,25 +1029,38 @@ try:
                                 last_global_wp_send = now
                             last_sp_send = now
 
+                    # ── ROTADAN SAPMA: SP_INTERVAL dışında, her döngüde kontrol et ──
+                    if (state == STATE_NAVIGATE and
+                            not in_corridor and
+                            abs(heading_error) > 45.0 and
+                            dist > 2.0 and curr_lat != 0.0 and
+                            obs_dist_near >= OBSTACLE_NEAR_LIMIT):
+                        turn_dir = 'right' if heading_error > 0 else 'left'
+                        print(f"\n  🔄 [ROTADAN SAPMA] Açı Sapması: {heading_error:.1f}° > 45° | Hizalanmak için duruluyor... Yön: {turn_dir}")
+                        aligning_to_wp = True
+                        state       = STATE_STOP
+                        state_since = now
+
                 elif state == STATE_STOP:
                     # GUIDED'da kal — sadece hız/dönüşü sıfırla (mod değişimi YOK)
                     send_guided_velocity(master, 0.0, 0.0)
                     if now - state_since >= 0.5:
-                        print(f"  🔄 [STOP→TURN] {'← Sol' if turn_dir == 'left' else '→ Sağ'} | Kalan: {dist:.1f}m")
+                        align_str = " [HİZALAMA]" if aligning_to_wp else ""
+                        print(f"  🔄 [STOP→TURN] {'← Sol' if turn_dir == 'left' else '→ Sağ'}{align_str} | Kalan: {dist:.1f}m")
                         state       = STATE_TURN
                         state_since = now
 
                 elif state == STATE_TURN:
-                    # GUIDED'da kal — otopilotun motorları aktif kontrol edebilmesi için hafif ileri hız (0.4 m/s) verilir.
-                    # (0.0 olunca otopilot dönmek yerine düz kayıyor / tepkisiz kalıyor)
-                    turn_speed = 0.4
-                    send_guided_velocity(master, turn_speed, _yaw_rate_for_direction(turn_dir))
+                    # KRİTİK: Hizalanma dönüşü = saf pivot (vx=0), engel kaçınma = ileri+dön
+                    # aligning_to_wp=True → araç yanlış yöne bakıyor; ileri gitmek WP'den uzaklaştırır!
+                    turn_vx = 0.0 if aligning_to_wp else GUIDED_AVOID_SPEED
+                    send_guided_velocity(master, turn_vx, _yaw_rate_for_direction(turn_dir))
                     
-                    time_limit = (now - state_since) >= 5.0
+                    time_limit = (now - state_since) >= 8.0
                     
                     if aligning_to_wp:
-                        # Rota hizalanma dönüşü: 5 derece toleransla dur
-                        turn_finished = (abs(heading_error) < 5.0)
+                        # Rota hizalanma dönüşü: 15 derece toleransla dur
+                        turn_finished = (abs(heading_error) < 15.0)
                     else:
                         # Engelden kaçınma dönüşü: Önümüz temiz olmalı ve hedefe yönlenene kadar dönmeliyiz
                         center_clear = (not info) or (info['dist_center'] >= OBSTACLE_NEAR_LIMIT)
@@ -1062,10 +1083,11 @@ try:
                 elif state == STATE_STABILIZE:
                     # GUIDED'da kal — hız/dönüşü sıfırla, sabitlen
                     send_guided_velocity(master, 0.0, 0.0)
-                    if now - state_since >= 0.24:
+                    if now - state_since >= 0.5:   # 0.24s → 0.5s: tüm atıleteım geçmesi için
                         print(f"  ✅ [STABILIZE→COOLDOWN] Rotaya devam ediyorum (GUIDED'dan hiç çıkmadım)")
                         send_global_setpoint(master, sp_lat, sp_lon)
-                        send_guided_speed(master, 1.5)  # Seyir hızına geri dön (1.5 m/s)
+                        # Güvenli düşük hızla başla — 5.0 m/s çok fazla, yanlış yöne zıplıyor
+                        send_guided_speed(master, GUIDED_AVOID_SPEED)   # 0.6 m/s
                         last_sp_send = now
                         avoider.start_cooldown()
                         aligning_to_wp = False  # Hizalanma bitti
@@ -1080,17 +1102,27 @@ try:
                     cd_near, cd_dir = fuse_obstacles(info, buoy_detections.get('yellow', []))
                     if cd_near < OBSTACLE_NEAR_LIMIT:
                         print(f"\n  🚨 [COOLDOWN→STOP] Cooldown'da engel yaklaştı! d={cd_near:.1f}m")
-                        turn_dir    = 'left' if cd_dir in ('right', 'center') else 'right'
-                        state       = STATE_STOP
-                        state_since = now
+                        turn_dir       = 'left' if cd_dir in ('right', 'center') else 'right'
+                        aligning_to_wp = False
+                        state          = STATE_STOP
+                        state_since    = now
+                    elif abs(heading_error) > 45.0 and dist > 2.0 and cd_near >= OBSTACLE_NEAR_LIMIT:
+                        turn_dir       = 'right' if heading_error > 0 else 'left'
+                        print(f"\n  🔄 [COOLDOWN→STOP] Açı Sapması: {heading_error:.1f}° > 45° — Hizalanıyor... Yön: {turn_dir}")
+                        aligning_to_wp = True
+                        state          = STATE_STOP
+                        state_since    = now
                     elif avoider.cooldown_remaining() <= 0:
                         if obstacle:
                             print(f"\n  ⚠️ [COOLDOWN→STOP] Engel hâlâ var! | Kalan: {dist:.1f}m")
-                            turn_dir    = 'left' if direction in ('right', 'center') else 'right'
-                            state       = STATE_STOP
-                            state_since = now
+                            turn_dir       = 'left' if direction in ('right', 'center') else 'right'
+                            aligning_to_wp = False
+                            state          = STATE_STOP
+                            state_since    = now
                         else:
                             print(f"  ✅ [COOLDOWN→NAVIGATE] Yol açık. | Kalan: {dist:.1f}m")
+                            # Hızı yavaşça artır: sahadaki hız geçişini yumuşat
+                            send_guided_speed(master, 1.5)
                             state       = STATE_NAVIGATE
                             state_since = now
 
@@ -1189,4 +1221,3 @@ finally:
             recorder.stop()
         except Exception: pass
     print("Tüm modüller kapatıldı.")
-

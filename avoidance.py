@@ -44,7 +44,6 @@ def send_guided_velocity(master, speed_ms: float, yaw_rate_rad: float):
         mavutil.mavlink.POSITION_TARGET_TYPEMASK_X_IGNORE |
         mavutil.mavlink.POSITION_TARGET_TYPEMASK_Y_IGNORE |
         mavutil.mavlink.POSITION_TARGET_TYPEMASK_Z_IGNORE |
-        mavutil.mavlink.POSITION_TARGET_TYPEMASK_VY_IGNORE |
         mavutil.mavlink.POSITION_TARGET_TYPEMASK_VZ_IGNORE |
         mavutil.mavlink.POSITION_TARGET_TYPEMASK_AX_IGNORE |
         mavutil.mavlink.POSITION_TARGET_TYPEMASK_AY_IGNORE |
@@ -108,8 +107,8 @@ class AvoidanceController:
 
     def send_avoid_command(self, master, direction: str):
         """Non-blocking saf pivot dönüş komutu gönderir (vx=0, yaw_rate=±GUIDED_AVOID_YAW_RATE)."""
-        # ArduPilot/NED: + = sağa (saat yönü), - = sola (saat yönünün tersi).
-        yaw_rate = -GUIDED_AVOID_YAW_RATE if direction == 'left' else GUIDED_AVOID_YAW_RATE
+        # DÜZELTME: Simülasyon/Otopilot yönü ters kilitlendiği için: + = sola, - = sağa.
+        yaw_rate = GUIDED_AVOID_YAW_RATE if direction == 'left' else -GUIDED_AVOID_YAW_RATE
         send_guided_velocity(master, 0.0, yaw_rate)
 
     def start_cooldown(self):
@@ -127,10 +126,10 @@ class AvoidanceController:
             self._avoiding = True
 
         if direction == 'left':
-            yaw_rate = -GUIDED_AVOID_YAW_RATE
+            yaw_rate = GUIDED_AVOID_YAW_RATE
             arrow = '← Sol (pivot)'
         else:
-            yaw_rate = +GUIDED_AVOID_YAW_RATE
+            yaw_rate = -GUIDED_AVOID_YAW_RATE
             arrow = '→ Sağ (pivot)'
 
         # --- ADIM 1: Dur ---
